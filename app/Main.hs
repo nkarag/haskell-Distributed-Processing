@@ -46,7 +46,7 @@ main = do
 
         -- spawn workers
         self <- getSelfPid
-        workersls <- spawnLocalWorkers  comm_model w $ getWorkersWork sendTime gracePeriod seed self
+        workersls <- spawnLocalWorkers w $ getWorkersWork sendTime gracePeriod seed self comm_model
 
         -- send to workers the list of workers' pids
         mapM_ (\pid -> send pid workersls) workersls

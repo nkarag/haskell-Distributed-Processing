@@ -48,21 +48,28 @@ data WorkerMsg = WorkerMsg {
 instance Binary WorkerMsg
 
 
+-- | Define message send by a worker
+data WorkerMsgLmp = 
+  WorkerMsgLmp {
+    msgdataLmp :: Double -- ^ a deterministic random number n ∈ (0, 1]
+    ,pidLmp :: ProcessId -- ^ the process id of the worker
+    ,lamportTstamp :: Int    -- ^ a simple sequence number indicating when message was generated
+  } 
+  | EmptyMsg 
+  deriving (Eq, Show, Generic, Typeable)
+
+-- Necessary in order to be able to send WorkerMsg to other Processes
+instance Binary WorkerMsgLmp
+
+
 -- | Spawn W workers at local node
 spawnLocalWorkers :: 
-      CommModel -- ^ Communication model to be used
-  ->  Int  -- ^ Number of workers to spawn  
+      Int  -- ^ Number of workers to spawn  
   ->  Process () -- ^ Work for workers to do
   ->  Process [ProcessId] -- ^ Output: list of spawned process ids
-spawnLocalWorkers cmodel numOfWs work = do
-    case cmodel of
-      Naive -> do
+spawnLocalWorkers numOfWs work = do
         pidsList <- mapM (\_ -> spawnLocal work) (replicate numOfWs 'w') 
         return pidsList
-      MasterClock -> do 
-        return []
-      Lamport -> do 
-        return []
 
 -- | Get Number of workers to spawn from a configuration file
 getNumOfWorkers :: IO (Int)
@@ -74,14 +81,163 @@ getWorkersPids pids = return pids
 getMessage :: WorkerMsg -> Process (WorkerMsg)
 getMessage m = return m
 
+getMessageLmp :: WorkerMsgLmp -> Process WorkerMsgLmp
+getMessageLmp m = return m
+
 -- | Define work for each worker
 getWorkersWork :: 
       Int -- ^ send time (sec)
   ->  Int -- ^ grace period (sec)
   ->  Int -- ^ seed for random generator
   ->  ProcessId -- ^ Coordinators Id
+  ->  CommModel -- ^ Communication Model
   ->  Process ()
-getWorkersWork stime gperiod seed coordPid = do
+getWorkersWork stime gperiod seed coordPid cmodel = do
+    case cmodel of
+      Naive -> naiveCommModel stime gperiod seed coordPid
+      MasterClock -> return ()
+      Lamport -> lamportCommModel stime gperiod seed coordPid
+
+-- | Ordering of messages is based on the Leslie Lamport paper:
+-- https://lamport.azurewebsites.net/pubs/time-clocks.pdf
+lamportCommModel::
+      Int -- ^ send time (sec)
+  ->  Int -- ^ grace period (sec)
+  ->  Int -- ^ seed for random generator
+  ->  ProcessId -- ^ Coordinators Id
+  ->  Process ()
+lamportCommModel stime gperiod seed coordPid = do
+  -- wait to read list of workers Process Ids sent from coordinator
+  wPids <- receiveWait [match getWorkersPids]
+
+  -- Debug
+  say $ "Debug (worker): " ++ "Have read list of workers pids: " ++ show wPids
+
+  -- initialise current maximum sequence
+  let currMaxTstamp = 0 :: Int
+
+  -- create random number generator with the input seed
+  let gen = mkStdGen seed
+
+  -- start send / receive work for send time. Returns a message list
+  currentTime <- liftIO getCurrentTime
+  msgList <- sendReceiveWork currentTime stime gen currMaxTstamp wPids []
+
+    -- get whatever unreceived messages (for gperiod of secs) and create final message list
+  currentTime2 <- liftIO getCurrentTime
+  msgListFinal <- finalizeMsgList currentTime2 gperiod msgList
+  
+  -- sort final list based on Lamport timestamp and calculate result
+  -- sort message list based on msg generation time time 
+  let 
+    sortedMsgls = sortBy (\m1 m2 -> 
+                              case (lamportTstamp m1) `compare` (lamportTstamp m2) of
+                                EQ -> (pidLmp m1) `compare` (pidLmp m2)
+                                _  -> (lamportTstamp m1) `compare` (lamportTstamp m2)
+
+                          ) msgListFinal
+    -- compute final result over sorted list
+    (i, sum_result) = foldr (\msg (cnt, accumv) -> (cnt + 1, (accumv + (fromIntegral $ cnt + 1) * (msgdataLmp msg)) :: Double)) (0,0) sortedMsgls
+
+  self <- getSelfPid
+  -- print result
+  liftIO $ putStrLn $ "I am worker " ++  show self ++ " and my FINAL result is: (" ++ show i ++ "," ++ show sum_result ++ ")"
+
+  -- send ack to coordinator and terminate
+  send coordPid $ "From worker " ++ show self ++ " OK!"
+
+  liftIO $ threadDelay 1000000
+
+  terminate
+
+  return ()
+  where
+    sendReceiveWork :: UTCTime -> Int -> StdGen -> Int -> [ProcessId] -> [WorkerMsgLmp] -> Process [WorkerMsgLmp]
+    sendReceiveWork timeStart stime gen currMaxTstamp wPids msgls = do
+
+      -- Prepare for sending out a message:
+      self <- getSelfPid
+      let        
+        -- get random value in [0,1) 
+        r =  random gen
+        m = (fst r) :: Double
+        newgen = snd r
+      
+        -- construct message to be sent
+        msg_out = WorkerMsgLmp { msgdataLmp = if m == 0 then 1.0 else m  -- transform 0s to 1s in order to comply with the (0,1] requirement
+                                ,pidLmp = self
+                                ,lamportTstamp = currMaxTstamp
+                          }
+      
+      -- send message to ALL worker nodes including yourself
+      let  recipients = wPids
+      mapM_ (\pid -> send pid msg_out) recipients
+      say $ "Debug (worker): I have broadcasted message to ALL nodes: " ++ show msg_out
+
+      --liftIO $ threadDelay $ 1000
+
+      -- read a single message
+      msg_in <- receiveWait [match getMessageLmp]
+      say $ "Debug (worker): I have read message: " ++ show msg_in
+          
+      let 
+        -- add message to current list
+        new_msgls = msg_in : msgls
+
+        -- get timestamp of message generation for next message to be sent
+        newMaxTstamp =  if (lamportTstamp msg_in) > currMaxTstamp
+                              then (lamportTstamp msg_in) + (1::Int)
+                              else currMaxTstamp + (1::Int)
+
+         -- loop if still within send time, i.e,. currentTime - timeStart <= sendTime
+      currTime <- liftIO getCurrentTime 
+      if currTime < addUTCTime (realToFrac stime) timeStart   
+        then -- loop 
+          do
+            --liftIO $ threadDelay 100000 
+            sendReceiveWork timeStart stime newgen newMaxTstamp wPids new_msgls
+        else  
+          do
+            say $ "Debug (worker): I have finished sending out messages" 
+            return new_msgls
+
+    finalizeMsgList :: UTCTime -> Int -> [WorkerMsgLmp] -> Process [WorkerMsgLmp]
+    finalizeMsgList timeStart gperiod msgls = do 
+      -- read a single message (do a not blocking read)
+      maybe_msg_in <- receiveTimeout 0 [match getMessageLmp]
+      let
+        msg_in = case maybe_msg_in of
+          Just m -> m 
+          Nothing -> EmptyMsg 
+
+      self <- getSelfPid      
+      let 
+        -- add message to current list
+        new_msgls = if msg_in == EmptyMsg then msgls else msg_in : msgls
+
+      -- loop if still within gperiod time, i.e,. currentTime - timeStart <= gperiod
+      currTime <- liftIO getCurrentTime  
+      --say $ "currTime = " ++ show currTime
+      --say $ "addUTCTime (realToFrac gperiod) timeStart" ++ (show $ addUTCTime (realToFrac gperiod) timeStart)
+
+      if currTime < addUTCTime (realToFrac gperiod) timeStart -- diffUTCTime currTime timeStart < realToFrac gperiod -- currTime < addUTCTime (realToFrac gperiod) timeStart  
+        then -- loop 
+          finalizeMsgList timeStart gperiod new_msgls
+        else          
+            do
+              say $ "Debug (worker) : last iteration in finalizeMsgList"
+              return new_msgls            
+
+
+-- | Naive approach communication model:
+-- Ordering of messages is based on each nodes system time.
+naiveCommModel :: 
+      Int -- ^ send time (sec)
+  ->  Int -- ^ grace period (sec)
+  ->  Int -- ^ seed for random generator
+  ->  ProcessId -- ^ Coordinators Id
+  ->  Process ()
+naiveCommModel stime gperiod seed coordPid = do
   -- wait to read list of workers Process Ids sent from coordinator
   wPids <- receiveWait [match getWorkersPids]
 
