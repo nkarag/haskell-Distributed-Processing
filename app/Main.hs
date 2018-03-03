@@ -5,11 +5,19 @@ import Control.Concurrent (threadDelay)
 import Control.Monad (forever)
 import Control.Distributed.Process
 import Control.Distributed.Process.Node
+--import Control.Distributed.Process.Closure
 import Network.Transport.TCP (createTransport, defaultTCPParameters)
 import System.Environment
 
 -- stack exec -- iohktest &> output.txt
 -- stack exec -- iohktest --send-for 3 --wait-for 5 --seed 7 --cmodel 1 --num-workers 5 2>&1 | tee output.txt
+
+
+--remotable ['naiveCommModelUncurried, 'lamportCommModelUncurried]
+
+--myRemoteTable :: RemoteTable
+--myRemoteTable = Main.__remoteTable initRemoteTable
+
 
 main :: IO ()
 main = do
@@ -36,7 +44,7 @@ main = do
 
     -- Create a Node
     Right t <- createTransport "127.0.0.1" "10501" (\s -> ("127.0.0.1","10501")) defaultTCPParameters
-    node <- newLocalNode t initRemoteTable
+    node <- newLocalNode t initRemoteTable -- myRemoteTable -- initRemoteTable
 
     -- spawn W worker nodes (ie nodes that send and receive messages)
     runProcess node $ do
@@ -47,6 +55,7 @@ main = do
         -- spawn workers
         self <- getSelfPid
         workersls <- spawnLocalWorkers w $ getWorkersWork sendTime gracePeriod seed self comm_model
+        --workersls <- spawnRemoteWorkers w (take w $ repeat node) $ getWorkersWorkRemote sendTime gracePeriod seed self comm_model
 
         -- send to workers the list of workers' pids
         mapM_ (\pid -> send pid workersls) workersls
@@ -78,11 +87,19 @@ waitForWorkersToFinish ::
     ->  Process ()  
 waitForWorkersToFinish workers timeToWait = do 
     -- liftIO $ putStrLn $ "Debug: length = " ++ (show $ length workers)
-    --wAck <- receiveTimeout timeToWait (take (length workers) (repeat (match getworkerAck)) ) -- [match getworkerAck] -- (replicate (length workers) $ match getworkerAck) 
-    _ <- receiveWait (take (length workers) (repeat (match getworkerAck)) )
-    -- liftIO $ putStrLn ack
+    
+    liftIO $ threadDelay $ timeToWait
+    -- _ <- receiveWait (take (length workers) (repeat (match getworkerAck)) )    
+    -- read all messages in the message queue      
+    mapM_ (\_ -> receiveWait [match getworkerAck]) $ take (length workers) (repeat "hi!")
+    
+
+    -- liftIO $ putStrLn ack    
     return ()
-    {-case wAck of
+    
+    {-wAck <- receiveTimeout timeToWait (take (length workers) (repeat (match getworkerAck)) ) -- [match getworkerAck] -- (replicate (length workers) $ match getworkerAck) 
+
+    case wAck of
         Nothing -> do 
             liftIO $ putStrLn $ "No worker ack received in " ++ (show timeToWait) ++ " secs!"
             return ()

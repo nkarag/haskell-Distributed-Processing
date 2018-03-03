@@ -2,7 +2,8 @@
      OverloadedStrings 
     ,BangPatterns
     ,DeriveDataTypeable
-    ,DeriveGeneric     
+    ,DeriveGeneric  
+   -- ,TemplateHaskell   
    -- ,ScopedTypeVariables
 #-}
 -- :set -XOverloadedStrings
@@ -11,8 +12,12 @@ module Worker  (
     WorkerAck
     ,CommModel (..)
     ,spawnLocalWorkers
+    ,spawnRemoteWorkers
     ,getNumOfWorkers
     ,getWorkersWork
+    --,getWorkersWorkRemote
+    ,naiveCommModelUncurried
+    ,lamportCommModelUncurried
   )
   where
 
@@ -20,10 +25,12 @@ module Worker  (
 --import Debug.Trace
 import Control.Concurrent (threadDelay)
 import Control.Distributed.Process
+import Control.Distributed.Process.Closure
+import Control.Distributed.Process.Node
 import System.Random
 import Data.Time.Clock
 import Data.Time.Format (formatTime, defaultTimeLocale)
-import Data.List (filter, replicate, elemIndex, sortBy)
+import Data.List (filter, replicate, elemIndex, sortBy, maximum)
 import Data.Maybe (fromJust)
 import Data.Binary
 import GHC.Generics
@@ -63,6 +70,16 @@ instance Binary WorkerMsgLmp
 
 
 -- | Spawn W workers at local node
+spawnRemoteWorkers :: 
+      Int  -- ^ Number of workers to spawn  
+  ->  [LocalNode]  -- ^ list of worker Nodes
+  ->  Closure (Process ()) -- ^ Work for workers to do
+  ->  Process [ProcessId] -- ^ Output: list of spawned process ids
+spawnRemoteWorkers numOfWs nodesls work = do
+        pidsList <- mapM (\nd -> spawn (localNodeId nd) work) nodesls 
+        return pidsList
+
+-- | Spawn W workers at W nodes
 spawnLocalWorkers :: 
       Int  -- ^ Number of workers to spawn  
   ->  Process () -- ^ Work for workers to do
@@ -70,6 +87,7 @@ spawnLocalWorkers ::
 spawnLocalWorkers numOfWs work = do
         pidsList <- mapM (\_ -> spawnLocal work) (replicate numOfWs 'w') 
         return pidsList
+
 
 -- | Get Number of workers to spawn from a configuration file
 getNumOfWorkers :: IO (Int)
@@ -97,6 +115,26 @@ getWorkersWork stime gperiod seed coordPid cmodel = do
       Naive -> naiveCommModel stime gperiod seed coordPid
       MasterClock -> return ()
       Lamport -> lamportCommModel stime gperiod seed coordPid
+
+
+-- | Define work for each worker
+{-getWorkersWorkRemote :: 
+      Int -- ^ send time (sec)
+  ->  Int -- ^ grace period (sec)
+  ->  Int -- ^ seed for random generator
+  ->  ProcessId -- ^ Coordinators Id
+  ->  CommModel -- ^ Communication Model
+  ->  Closure (Process ()) 
+getWorkersWorkRemote stime gperiod seed coordPid cmodel = do
+    case cmodel of
+      Naive -> $(mkClosure 'naiveCommModelUncurried) (stime, gperiod, seed, coordPid)
+      -- MasterClock -> return ()
+      Lamport -> $(mkClosure 'lamportCommModelUncurried) (stime, gperiod, seed, coordPid)-}
+
+
+lamportCommModelUncurried ::
+      (Int ,Int ,Int ,ProcessId) -> Process ()
+lamportCommModelUncurried (stime, gperiod, seed, coordPid) = lamportCommModel stime gperiod seed coordPid
 
 -- | Ordering of messages is based on the Leslie Lamport paper:
 -- https://lamport.azurewebsites.net/pubs/time-clocks.pdf
@@ -144,7 +182,7 @@ lamportCommModel stime gperiod seed coordPid = do
   liftIO $ putStrLn $ "I am worker " ++  show self ++ " and my FINAL result is: (" ++ show i ++ "," ++ show sum_result ++ ")"
 
   -- send ack to coordinator and terminate
-  send coordPid $ "From worker " ++ show self ++ " OK!"
+  send coordPid $ "From worker " ++ show self ++ " OK. Bye!"
 
   liftIO $ threadDelay 1000000
 
@@ -171,23 +209,53 @@ lamportCommModel stime gperiod seed coordPid = do
       
       -- send message to ALL worker nodes including yourself
       let  recipients = wPids
+
+      -- send m to all other workers
+      -- let recipients =  filter (\pid -> pid /= self) wPids 
+
       mapM_ (\pid -> send pid msg_out) recipients
       say $ "Debug (worker): I have broadcasted message to ALL nodes: " ++ show msg_out
 
+
       --liftIO $ threadDelay $ 1000
 
-      -- read a single message
+      -- We need to find the max timestamp seen so far. So we have to read the whole message queue
+      -- Get the length of the message queue
+      procInfoMaybe <- getProcessInfo self
+      let msgQueueLength = case procInfoMaybe of
+              Just pinfo -> infoMessageQueueLength pinfo
+              Nothing -> 0
+
+      say $ "Debug (worker): The length of the message queue is: " ++ (show msgQueueLength)
+
+      -- read all messages in the message queue      
+      msg_in_ls <- mapM (\_ -> receiveWait [match getMessageLmp]) $ take (msgQueueLength) (repeat "hi!")
+      
+      {--- read a single message
       msg_in <- receiveWait [match getMessageLmp]
-      say $ "Debug (worker): I have read message: " ++ show msg_in
-          
+      say $ "Debug (worker): I have read message: " ++ show msg_in-}
+      
+      say $ "Debug (worker): I have read " ++ (show $ length msg_in_ls) ++ " messages"
+      
       let 
+        -- find max timestamp in the list of just read messages 
+        maxFromMsgQueue = maximum [lamportTstamp msgin | msgin <- msg_in_ls]
+
+        -- Compare this with current maximum and get timestamp of message generation for next message to be sent
+        newMaxTstamp =  if (maxFromMsgQueue) > currMaxTstamp
+                              then (maxFromMsgQueue) + (1::Int)
+                              else currMaxTstamp + (1::Int)
+        -- finally, concat just read message list with the current message list
+        new_msgls = msgls ++ msg_in_ls
+
+      {-let 
         -- add message to current list
-        new_msgls = msg_in : msgls
+        new_msgls = msg_in : msg_out : msgls
 
         -- get timestamp of message generation for next message to be sent
         newMaxTstamp =  if (lamportTstamp msg_in) > currMaxTstamp
                               then (lamportTstamp msg_in) + (1::Int)
-                              else currMaxTstamp + (1::Int)
+                              else currMaxTstamp + (1::Int)-}
 
          -- loop if still within send time, i.e,. currentTime - timeStart <= sendTime
       currTime <- liftIO getCurrentTime 
@@ -228,6 +296,9 @@ lamportCommModel stime gperiod seed coordPid = do
               say $ "Debug (worker) : last iteration in finalizeMsgList"
               return new_msgls            
 
+naiveCommModelUncurried ::
+  (Int ,Int ,Int ,ProcessId) -> Process ()
+naiveCommModelUncurried (stime, gperiod, seed, coordPid) = naiveCommModel stime gperiod seed coordPid
 
 -- | Naive approach communication model:
 -- Ordering of messages is based on each nodes system time.
@@ -280,7 +351,7 @@ naiveCommModel stime gperiod seed coordPid = do
 
   -- send acknowledgment to Coordinator that I have finished
   -- self <- getSelfPid
-  send coordPid $ "From worker " ++ show self ++ " OK!"
+  send coordPid $ "From worker " ++ show self ++ " OK. Bye!"
 
   liftIO $ threadDelay 1000000
 
@@ -351,16 +422,37 @@ naiveCommModel stime gperiod seed coordPid = do
 
       if currTime < addUTCTime (realToFrac gperiod) timeStart -- diffUTCTime currTime timeStart < realToFrac gperiod -- currTime < addUTCTime (realToFrac gperiod) timeStart  
         then -- loop 
-          do             
+          do            
+            self <- getSelfPid 
+            -- Get the length of the message queue
+            procInfoMaybe <- getProcessInfo self
+            let msgQueueLength = case procInfoMaybe of
+                    Just pinfo -> infoMessageQueueLength pinfo
+                    Nothing -> 0
+
+            say $ "Debug (worker): The length of the message queue is: " ++ (show msgQueueLength)
+
+            {-msg_in_ls <-  if msgQueueLength /= 0 
+                            then
+                              -- read all messages in the message queue      
+                              mapM (\_ -> receiveWait [match getMessage]) $ take (msgQueueLength) (repeat "hi!")
+                            else 
+                              return []-}
+
+            msg_in_ls <- mapM (\_ -> receiveWait [match getMessage]) $ take (msgQueueLength) (repeat "hi!")
+
             -- read a single message
-            msg <- receiveWait [match getMessage]
+            --msg <- receiveWait [match getMessage]
+            
             -- msg <- receiveTimeout gperiod [match getMessage]
             --say $ "Debug (worker): I have read #" ++ show (msgCnt + (1::Int) ) ++ " message :" ++ show msg
             
-            say $ "Debug (worker): I have read #" ++ show (length msgls) ++ " message :" ++ show msg
+            --say $ "Debug (worker): I have read #" ++ show (length msgls + 1) ++ " message :" ++ show msg
 
+            say $ "Debug (worker): I have read " ++ show (length msg_in_ls) ++ " messages" 
             -- add message to message list
-            let new_msgls = msg:msgls
+            --let new_msgls = msg:msgls
+            let new_msgls = if msg_in_ls == [] then msgls else  msgls ++ msg_in_ls
 
             -- accumulate sum
             {-let
@@ -377,6 +469,7 @@ naiveCommModel stime gperiod seed coordPid = do
             do
               say $ "Debug (worker) : last iteration in readwork"
               return msgls
+
 
               {-let
                 -- sort message list based on sent time 
