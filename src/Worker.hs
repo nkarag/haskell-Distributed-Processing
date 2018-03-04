@@ -55,12 +55,12 @@ data WorkerMsg = WorkerMsg {
 instance Binary WorkerMsg
 
 
--- | Define message send by a worker
+-- | Define message with Lamport timestamp send by a worker
 data WorkerMsgLmp = 
   WorkerMsgLmp {
     msgdataLmp :: Double -- ^ a deterministic random number n ∈ (0, 1]
     ,pidLmp :: ProcessId -- ^ the process id of the worker
-    ,lamportTstamp :: Int    -- ^ a simple sequence number indicating when message was generated
+    ,lamportTstamp :: Int    -- ^ The Lamport timestamp a simple sequence number indicating when message was generated
   } 
   | EmptyMsg 
   deriving (Eq, Show, Generic, Typeable)
@@ -136,7 +136,7 @@ lamportCommModelUncurried ::
       (Int ,Int ,Int ,ProcessId) -> Process ()
 lamportCommModelUncurried (stime, gperiod, seed, coordPid) = lamportCommModel stime gperiod seed coordPid
 
--- | Ordering of messages is based on the Leslie Lamport paper:
+-- | Lamport Communication Model: Ordering of messages is based on the Leslie Lamport paper:
 -- https://lamport.azurewebsites.net/pubs/time-clocks.pdf
 lamportCommModel::
       Int -- ^ send time (sec)
@@ -470,71 +470,6 @@ naiveCommModel stime gperiod seed coordPid = do
               say $ "Debug (worker) : last iteration in readwork"
               return msgls
 
-
-              {-let
-                -- sort message list based on sent time 
-                sortedMsgls = sortBy (\m1 m2 -> (sendTstamp_psec m1) `compare` (sendTstamp_psec m2)) msgls
-                -- compute final result over sorted list
-                -- sum_result = foldr (\msg accum -> (accum + (fromIntegral $ fromJust $ elemIndex msg sortedMsgls) * (msgdata msg)) :: Double) 0 sortedMsgls
-                (i, sum_result) = foldr (\msg (cnt, accumv) -> (cnt + 1, (accumv + (fromIntegral $ cnt + 1) * (msgdata msg)) :: Double)) (0,0) sortedMsgls
-              --return (msgCnt, accumVal)
-              return (length sortedMsgls, sum_result)-}
-
-      {--- loop if still within gperiod time, i.e,. currentTime - timeStart <= gperiod
-      currTime <- liftIO getCurrentTime  
-      -- if diffUTCTime currTime timeStart <= realToFrac gperiod
-      say $ "currTime = " ++ show currTime
-      say $ "addUTCTime (realToFrac gperiod) timeStart" ++ (show $ addUTCTime (realToFrac gperiod) timeStart)
-
-      if currTime <= addUTCTime (realToFrac gperiod) timeStart  
-        then -- loop 
-          do
-            liftIO $ threadDelay 350000                 
-            readwork timeStart new_accumVal new_msgCnt
-        else  -- print final result
-          do
-            {-say $ "Debug (worker): I have finished reading messages"
-            self <- getSelfPid
-            -- print result
-            liftIO $ putStrLn $ "I am worker " ++  show self ++ " and my result is: (" ++ show new_msgCnt ++ "," ++ show new_accumVal ++ ")"-}
-            return (new_msgCnt, new_accumVal)-}
-
-
-{-    readwork :: UTCTime -> Double -> Int -> Process (Int, Double)
-    readwork timeStart accumVal msgCnt = do 
-      -- read a single message
-      --msg <- receiveWait [match getMessage]
-      -- message <- receiveTimeout gperiod [match getMessage]
-      message <- (expectTimeout gperiod) :: Process (Maybe WorkerMsg) 
-      case message of
-        Just msg -> do
-          say $ "Debug (worker): I have read #" ++ show (msgCnt + (1::Int) ) ++ " message :" ++ show msg
-
-          -- accumulate sum
-          let
-            new_msgCnt = msgCnt + (1::Int) 
-            new_accumVal = (accumVal + (fromIntegral new_msgCnt) * (msgdata msg)) :: Double
-
-          self <- getSelfPid  
-          liftIO $ putStrLn $ "I am worker " ++  show self ++ " and my result is: (" ++ show new_msgCnt ++ "," ++ show new_accumVal ++ ")"
-                
-          -- loop if still within gperiod time, i.e,. currentTime - timeStart <= gperiod
-          currTime <- liftIO getCurrentTime  
-          -- if diffUTCTime currTime timeStart <= realToFrac gperiod
-          say $ "currTime = " ++ show currTime
-          say $ "addUTCTime (realToFrac gperiod) timeStart" ++ (show $ addUTCTime (realToFrac gperiod) timeStart)
-
-          if currTime <= addUTCTime (realToFrac gperiod) timeStart  
-            then -- loop 
-              do
-                liftIO $ threadDelay 200000                 
-                readwork timeStart new_accumVal new_msgCnt
-            else  -- print final result
-                return (new_msgCnt, new_accumVal)
-        Nothing -> do
-          say $ "inside Nothing"
-          return (msgCnt, accumVal)
--}
 
 
 

@@ -9,9 +9,10 @@ import Control.Distributed.Process.Node
 import Network.Transport.TCP (createTransport, defaultTCPParameters)
 import System.Environment
 
--- stack exec -- iohktest &> output.txt
--- stack exec -- iohktest --send-for 3 --wait-for 5 --seed 7 --cmodel 1 --num-workers 5 2>&1 | tee output.txt
-
+-------------------------------------------------
+--  Execute it like this:
+--      stack exec -- iohktest --send-for 3 --wait-for 5 --seed 7 --cmodel 1 --num-workers 5 2>&1 | tee output.txt
+--------------------------------------------------
 
 --remotable ['naiveCommModelUncurried, 'lamportCommModelUncurried]
 
