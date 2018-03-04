@@ -7,7 +7,7 @@ Several nodes continuously send messages to other nodes in such way, that every 
 **<|m|, Σ(i * m~i~)> ,* 
 where  i in [1, |m|]* and  m is the list of all messages sent by all nodes, ordered by sending time,
 and m~i~ is the i-th message sent by some node. 
-For the detailed specs of this program please refer to the [spec.pdf](https://github.com/nkarag/haskell-Distributed-Processing/spec.pdf) document.
+For the detailed specs of this program please refer to the [spec.pdf](https://github.com/nkarag/haskell-Distributed-Processing/blob/master/spec.pdf) document.
 The important thing to notice is that the final result (sum), strongly depends on the ordering of the messages. In our case, according to the spec document  we want to order all the generated messages based on the timestamp of when they got sent.
 
 ## How to run the program
@@ -57,7 +57,7 @@ The program sends output to both stdout and stderr (for debugging purposes). Sin
     I am worker pid://127.0.0.1:10501:0:16 and my FINAL result is: (1497,633599.3864899322)
     From worker pid://127.0.0.1:10501:0:16 OK. Bye!
 
-Finally, in the [demo_runs](https://github.com/nkarag/haskell-Distributed-Processing/demo_runs) folder, one can find several program outputs for various setups.
+Finally, in the [demo_runs](https://github.com/nkarag/haskell-Distributed-Processing/tree/master/demo_runs) folder, one can find several program outputs for various setups.
  In the next section, we expand on the communication models used for solving the message ordering problem.
 ## Communication Models and Ordering of Messages 
 ### Problem Specification
