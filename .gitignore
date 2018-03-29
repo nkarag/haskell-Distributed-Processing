@@ -1,4 +1,4 @@
 .stack-work/
-IOHK-Test.cabal
+package.yaml
 *~
 /Misc
